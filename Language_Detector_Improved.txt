@@ -1,0 +1,288 @@
+' ============================================
+' UiPath Invoke Code - Language Detector V3 (IMPROVED)
+' ============================================
+' Input Arguments:
+'   in_strText          (String)
+'   in_dictKeywordsDE   (Dictionary(Of String, Integer))
+'   in_dictKeywordsFR   (Dictionary(Of String, Integer))
+'   in_dictKeywordsIT   (Dictionary(Of String, Integer))
+'   in_dictKeywordsEN   (Dictionary(Of String, Integer))
+'   in_dblThreshold     (Double)
+' Output Arguments:
+'   out_strLanguage     (String)
+'   out_strLanguageName (String)
+'   out_dblConfidence   (Double)
+'   out_strDetails      (String)
+' ============================================
+
+Try
+    ' Initialize outputs
+    out_strLanguage = "UNKNOWN"
+    out_strLanguageName = "Unknown"
+    out_dblConfidence = 0.0
+    out_strDetails = ""
+
+    ' Validate inputs
+    If Not ValidateInputs(in_strText, in_dictKeywordsDE, in_dictKeywordsFR, in_dictKeywordsIT, in_dictKeywordsEN, out_strDetails) Then
+        Return
+    End If
+
+    ' Normalize text once
+    Dim textToAnalyze As String = String.Concat(" ", in_strText.Trim().ToLower(), " ")
+    Dim textLength As Integer = textToAnalyze.Length
+
+    ' Define language configurations
+    Dim languageConfigs As New Dictionary(Of String, LanguageConfig) From {
+        {"DE", New LanguageConfig("German", in_dictKeywordsDE, New Char() {"ä"c, "ö"c, "ü"c, "ß"c})},
+        {"FR", New LanguageConfig("French", in_dictKeywordsFR, New Char() {"é"c, "è"c, "ê"c, "à"c, "ù"c, "ç"c})},
+        {"IT", New LanguageConfig("Italian", in_dictKeywordsIT, New Char() {"à"c, "è"c, "é"c, "ì"c, "ò"c, "ù"c})},
+        {"EN", New LanguageConfig("English", in_dictKeywordsEN, New Char() {})}
+    }
+
+    ' Calculate scores
+    Dim scores As New Dictionary(Of String, Integer)()
+    Dim scoreDetails As New Dictionary(Of String, ScoreBreakdown)()
+
+    For Each config In languageConfigs
+        Dim langCode As String = config.Key
+        Dim breakdown As New ScoreBreakdown()
+        
+        ' Calculate keyword score
+        breakdown.KeywordScore = CalculateKeywordScore(textToAnalyze, config.Value.Keywords)
+        
+        ' Calculate special character score
+        breakdown.SpecialCharScore = CalculateSpecialCharScore(textToAnalyze, config.Value.SpecialChars)
+        
+        ' Total score
+        Dim totalLangScore As Integer = breakdown.KeywordScore + breakdown.SpecialCharScore
+        scores(langCode) = totalLangScore
+        scoreDetails(langCode) = breakdown
+    Next
+
+    ' Calculate total
+    Dim totalScore As Integer = scores.Values.Sum()
+
+    If totalScore = 0 Then
+        out_strDetails = "No language indicators found in text"
+        Return
+    End If
+
+    ' Analyze results
+    Dim analysisResult As AnalysisResult = AnalyzeScores(scores)
+
+    ' Handle tie scenario
+    If analysisResult.IsTie Then
+        out_strDetails = String.Format("Tie detected between: {0} | Scores: DE={1}, FR={2}, IT={3}, EN={4}", 
+            analysisResult.TiedLanguages, scores("DE"), scores("FR"), scores("IT"), scores("EN"))
+        Return
+    End If
+
+    ' Get winner
+    Dim detectedLang As String = analysisResult.WinnerLang
+    Dim maxScore As Integer = scores(detectedLang)
+    Dim secondBestScore As Integer = analysisResult.SecondBestScore
+
+    ' Calculate confidence
+    Dim confidence As Double = CalculateConfidence(maxScore, totalScore, secondBestScore)
+
+    ' Apply threshold
+    If confidence >= in_dblThreshold Then
+        out_strLanguage = detectedLang
+        out_strLanguageName = languageConfigs(detectedLang).LanguageName
+    Else
+        out_strLanguage = "UNKNOWN"
+        out_strLanguageName = "Unknown (Low Confidence)"
+    End If
+
+    out_dblConfidence = confidence
+
+    ' Build details
+    Dim confidenceLevel As String = GetConfidenceLevel(confidence)
+    out_strDetails = String.Format(
+        "DE: {0} (KW:{1} SC:{2}), FR: {3} (KW:{4} SC:{5}), IT: {6} (KW:{7} SC:{8}), EN: {9} (KW:{10} SC:{11}) | Total: {12} | Winner: {13} | Confidence: {14:P1} ({15})",
+        scores("DE"), scoreDetails("DE").KeywordScore, scoreDetails("DE").SpecialCharScore,
+        scores("FR"), scoreDetails("FR").KeywordScore, scoreDetails("FR").SpecialCharScore,
+        scores("IT"), scoreDetails("IT").KeywordScore, scoreDetails("IT").SpecialCharScore,
+        scores("EN"), scoreDetails("EN").KeywordScore, scoreDetails("EN").SpecialCharScore,
+        totalScore, detectedLang, confidence, confidenceLevel)
+
+Catch ex As Exception
+    out_strLanguage = "UNKNOWN"
+    out_strLanguageName = "Unknown"
+    out_dblConfidence = 0.0
+    out_strDetails = String.Format("Error: {0}", ex.Message)
+End Try
+
+' ============================================
+' HELPER CLASSES
+' ============================================
+
+' Class to hold language configuration
+Public Class LanguageConfig
+    Public Property LanguageName As String
+    Public Property Keywords As Dictionary(Of String, Integer)
+    Public Property SpecialChars As Char()
+
+    Public Sub New(name As String, keywords As Dictionary(Of String, Integer), specialChars As Char())
+        LanguageName = name
+        Keywords = keywords
+        SpecialChars = specialChars
+    End Sub
+End Class
+
+' Class to hold score breakdown
+Public Class ScoreBreakdown
+    Public Property KeywordScore As Integer = 0
+    Public Property SpecialCharScore As Integer = 0
+End Class
+
+' Class to hold analysis result
+Public Class AnalysisResult
+    Public Property WinnerLang As String
+    Public Property SecondBestScore As Integer
+    Public Property IsTie As Boolean
+    Public Property TiedLanguages As String
+End Class
+
+' ============================================
+' VALIDATION FUNCTIONS
+' ============================================
+
+Function ValidateInputs(text As String, dictDE As Dictionary(Of String, Integer), dictFR As Dictionary(Of String, Integer), 
+                        dictIT As Dictionary(Of String, Integer), dictEN As Dictionary(Of String, Integer), ByRef errorMsg As String) As Boolean
+    If String.IsNullOrWhiteSpace(text) Then
+        errorMsg = "Input text is empty or null"
+        Return False
+    End If
+
+    If dictDE Is Nothing OrElse dictFR Is Nothing OrElse dictIT Is Nothing OrElse dictEN Is Nothing Then
+        errorMsg = "Error: One or more keyword dictionaries are Nothing"
+        Return False
+    End If
+
+    Return True
+End Function
+
+' ============================================
+' SCORING FUNCTIONS
+' ============================================
+
+Function CalculateKeywordScore(text As String, keywords As Dictionary(Of String, Integer)) As Integer
+    If keywords Is Nothing OrElse keywords.Count = 0 Then
+        Return 0
+    End If
+
+    Dim score As Integer = 0
+
+    For Each entry In keywords
+        ' Use word boundary matching for better accuracy (spaces required)
+        Dim pattern As String = String.Concat(" ", entry.Key, " ")
+        Dim occurrences As Integer = 0
+        Dim searchIndex As Integer = 0
+
+        While searchIndex < text.Length
+            Dim position As Integer = text.IndexOf(pattern, searchIndex, StringComparison.OrdinalIgnoreCase)
+            If position = -1 Then Exit While
+
+            occurrences += 1
+            searchIndex = position + pattern.Length
+        End While
+
+        score += occurrences * entry.Value
+    Next
+
+    Return score
+End Function
+
+Function CalculateSpecialCharScore(text As String, specialChars As Char()) As Integer
+    Const SPECIAL_CHAR_BONUS As Integer = 3
+    Dim score As Integer = 0
+
+    If specialChars Is Nothing OrElse specialChars.Length = 0 Then
+        Return 0
+    End If
+
+    For Each ch As Char In specialChars
+        Dim count As Integer = 0
+        For Each c As Char In text
+            If c = ch Then count += 1
+        Next
+        score += count * SPECIAL_CHAR_BONUS
+    Next
+
+    Return score
+End Function
+
+Function CalculateConfidence(maxScore As Integer, totalScore As Integer, secondBestScore As Integer) As Double
+    ' Base confidence: proportion of winning language
+    Dim confidence As Double = CDbl(maxScore) / CDbl(totalScore)
+
+    ' Adjustment 1: Score separation from second place
+    If secondBestScore > 0 Then
+        Dim separation As Double = CDbl(maxScore - secondBestScore) / CDbl(maxScore)
+        confidence = confidence * (0.7 + 0.3 * separation)
+    End If
+
+    ' Adjustment 2: Penalize low absolute scores
+    If totalScore < 20 Then
+        confidence = confidence * (CDbl(totalScore) / 20.0)
+    End If
+
+    ' Clamp confidence between 0 and 1
+    confidence = Math.Min(1.0, Math.Max(0.0, confidence))
+    
+    Return confidence
+End Function
+
+' ============================================
+' ANALYSIS & DETAIL FUNCTIONS
+' ============================================
+
+Function AnalyzeScores(scores As Dictionary(Of String, Integer)) As AnalysisResult
+    Dim result As New AnalysisResult()
+    
+    If scores Is Nothing OrElse scores.Count = 0 Then
+        result.WinnerLang = "UNKNOWN"
+        result.IsTie = False
+        result.SecondBestScore = 0
+        Return result
+    End If
+
+    ' Get sorted scores
+    Dim sortedScores As List(Of KeyValuePair(Of String, Integer)) = scores.OrderByDescending(Function(x) x.Value).ToList()
+    
+    Dim maxScore As Integer = sortedScores(0).Value
+    Dim winnersCount As Integer = scores.Values.Count(Function(s) s = maxScore)
+
+    ' Check for tie
+    If winnersCount > 1 Then
+        Dim tiedLanguages As List(Of String) = scores.Where(Function(x) x.Value = maxScore).Select(Function(x) x.Key).ToList()
+        result.IsTie = True
+        result.TiedLanguages = String.Join(", ", tiedLanguages)
+        result.WinnerLang = "UNKNOWN"
+    Else
+        result.WinnerLang = sortedScores(0).Key
+        result.IsTie = False
+        result.TiedLanguages = ""
+    End If
+
+    ' Get second best score
+    result.SecondBestScore = If(sortedScores.Count > 1, sortedScores(1).Value, 0)
+
+    Return result
+End Function
+
+Function GetConfidenceLevel(conf As Double) As String
+    Select Case conf
+        Case Is >= 0.8
+            Return "Very High"
+        Case Is >= 0.6
+            Return "High"
+        Case Is >= 0.4
+            Return "Medium"
+        Case Is >= 0.2
+            Return "Low"
+        Case Else
+            Return "Very Low"
+    End Select
+End Function
